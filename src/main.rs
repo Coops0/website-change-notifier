@@ -251,11 +251,13 @@ mod tests {
                 .unwrap()
         ).await.unwrap();
 
+
         let h = task::spawn(async move {
             while let Some(h) = handler.next().await {
                 h.unwrap();
             }
         });
+
 
         let page = browser.new_page("https://www.google.com").await.unwrap();
 
