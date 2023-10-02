@@ -5,8 +5,7 @@ use chromiumoxide::{Browser, Page};
 use chromiumoxide::browser::BrowserConfigBuilder;
 use chromiumoxide::page::ScreenshotParams;
 use futures::StreamExt;
-use image::{GrayImage, RgbImage};
-use image_compare::Algorithm;
+use image::RgbImage;
 use pushover_rs::{MessageBuilder, send_pushover_request};
 use tokio::{task, time};
 
@@ -228,8 +227,9 @@ async fn notify(
 mod tests {
     use std::time::Duration;
 
-    use chromiumoxide::Browser;
+    use chromiumoxide::{Browser, Page};
     use chromiumoxide::browser::BrowserConfigBuilder;
+    use chromiumoxide::page::ScreenshotParams;
     use futures::StreamExt;
     use tokio::task;
 
@@ -245,15 +245,66 @@ mod tests {
 
         println!("past browser launch");
 
-        let h = task::spawn(async move {
+        let _ = task::spawn(async move {
             while let Some(h) = handler.next().await {
                 h.unwrap();
             }
         });
 
 
-        let page = browser.new_page("https://www.google.com").await.unwrap();
+        let _ = browser.new_page("https://www.google.com").await.unwrap();
 
         println!("past page");
+    }
+
+    #[tokio::test]
+    async fn test_ka_website_comparison() {
+        let (browser, mut handler) = Browser::launch(
+            BrowserConfigBuilder::default()
+                .request_timeout(Duration::from_secs(5))
+                .build()
+                .unwrap()
+        ).await.unwrap();
+
+        let _ = task::spawn(async move {
+            while let Some(h) = handler.next().await {
+                h.unwrap();
+            }
+        });
+
+        let page = browser.new_page("about:blank").await.unwrap();
+        page.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36").await.unwrap();
+
+        async fn navigate(p: &Page) -> Vec<u8> {
+            let page = p.goto("https://www.kevinabstract.co").await.unwrap();
+            p.wait_for_navigation().await.unwrap();
+            page.screenshot(ScreenshotParams::default()).await.unwrap()
+        }
+
+        let first_image = navigate(&page).await;
+        let second_image = navigate(&page).await;
+        let third_image = navigate(&page).await;
+
+        println!("past page");
+
+        task::spawn_blocking(move || {
+            let first_image = image::load_from_memory(first_image.as_slice()).unwrap().into_rgb8();
+            let second_image = image::load_from_memory(second_image.as_slice()).unwrap().into_rgb8();
+            let third_image = image::load_from_memory(third_image.as_slice()).unwrap().into_rgb8();
+
+
+            let comps = [
+                image_compare::rgb_hybrid_compare(&first_image, &second_image).unwrap().score,
+                image_compare::rgb_hybrid_compare(&first_image, &third_image).unwrap().score,
+                image_compare::rgb_hybrid_compare(&second_image, &third_image).unwrap().score,
+            ];
+
+            dbg!(comps);
+
+            for comp in comps {
+                assert!(comp > 0.98);
+            }
+        }).await.unwrap();
+
     }
 }
