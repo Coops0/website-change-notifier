@@ -5,7 +5,7 @@ use chromiumoxide::{Browser, Page};
 use chromiumoxide::browser::BrowserConfigBuilder;
 use chromiumoxide::page::ScreenshotParams;
 use futures::StreamExt;
-use image::GrayImage;
+use image::{GrayImage, RgbImage};
 use image_compare::Algorithm;
 use pushover_rs::{MessageBuilder, send_pushover_request};
 use tokio::{task, time};
@@ -14,17 +14,14 @@ const MERCH_KEYWORDS: &[&str] = &[
     "merch",
     "store",
     "shop",
-    "stock",
     "buy",
-    "cloth",
-    "shirt",
-    "hood",
-    "tee"
+    "clothing",
+    "clothes",
 ];
 
 struct WebsiteData {
     url: String,
-    last_image: Option<GrayImage>,
+    last_image: Option<RgbImage>,
     merch_already_detected: bool,
 
     // in a row, count the number of times i have been texted, used for cooldown
@@ -145,36 +142,37 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
     page.goto(&site.url).await?;
     page.wait_for_navigation().await?;
 
-    let new_screenshot_bytes = page.screenshot(
-        ScreenshotParams::default()
-        // .clip(
-        //     Viewport::builder()
-        //         .width(1920)
-        //         .height(1080)
-        //         .x(0)
-        //         .y(0)
-        //         .scale(1)
-        //         .build()
-        //         .expect("screenshot builder invalid")
-        // )
-    ).await?;
+    let new_screenshot_bytes = page.screenshot(ScreenshotParams::default()).await?;
 
     let last_image = site.last_image.take();
-    let (score, new_image) = task::spawn_blocking(move || -> anyhow::Result<(f64, GrayImage)> {
-        let new_image = image::load_from_memory(new_screenshot_bytes.as_slice())?.into_luma8();
+
+    let (score, new_image) = task::spawn_blocking(move || -> anyhow::Result<(f64, RgbImage)> {
+        let new_image = image::load_from_memory(new_screenshot_bytes.as_slice())?.into_rgb8();
 
         let Some(last_image) = last_image else {
             return Ok((0.0, new_image));
         };
 
-        let comparison = image_compare::gray_similarity_structure(&Algorithm::MSSIMSimple, &new_image, &last_image)?;
+        let comparison = image_compare::rgb_hybrid_compare(&new_image, &last_image)?;
         Ok((comparison.score, new_image))
     }).await??;
 
     println!("Got comparison score of {} for website {}", score, site.url);
 
     site.last_image = Some(new_image);
-    if score <= 0.05 {
+
+    // if get css of page then it always has shop or store or whatever
+    let text = page.evaluate("document.body.outerHTML").await?.into_value::<String>()?.to_lowercase();
+
+    let mut merch_newly_detected = MERCH_KEYWORDS.iter()
+        .any(|k| text.contains(k));
+    if site.merch_already_detected {
+        merch_newly_detected = false;
+    } else {
+        site.merch_already_detected = merch_newly_detected;
+    }
+
+    if score > 0.95 && !merch_newly_detected {
         if site.total_cooldowns != 0 {
             site.total_cooldowns -= 1;
         }
@@ -184,19 +182,11 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let text = page.content().await?.to_lowercase();
-    let mut merch_newly_detected = MERCH_KEYWORDS.iter()
-        .any(|k| text.contains(k));
-
-    if site.merch_already_detected {
-        merch_newly_detected = false;
-    } else {
-        site.merch_already_detected = merch_newly_detected;
-    }
-
     if first_run {
         return Ok(());
     }
+
+    page.save_screenshot(ScreenshotParams::default(), format!("test_{}.png", site.url.get(10..12).unwrap())).await?;
 
     let (priority, message) = if merch_newly_detected {
         (1, format!("Detected merch! Difference rating of {score}"))
@@ -237,6 +227,7 @@ async fn notify(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
     use chromiumoxide::Browser;
     use chromiumoxide::browser::BrowserConfigBuilder;
     use futures::StreamExt;
@@ -247,10 +238,12 @@ mod tests {
         let (browser, mut handler) = Browser::launch(
             BrowserConfigBuilder::default()
                 .request_timeout(Duration::from_secs(5))
+                // .user_data_dir("C:\\Users\\Cooper\\Downloads")
                 .build()
                 .unwrap()
         ).await.unwrap();
 
+        println!("past browser launch");
 
         let h = task::spawn(async move {
             while let Some(h) = handler.next().await {
@@ -261,6 +254,6 @@ mod tests {
 
         let page = browser.new_page("https://www.google.com").await.unwrap();
 
-        h.await.unwrap();
+        println!("past page");
     }
 }
