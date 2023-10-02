@@ -1,12 +1,30 @@
 use std::fmt::{Debug, Formatter};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chromiumoxide::{Browser, Page};
+use chromiumoxide::browser::BrowserConfigBuilder;
+use chromiumoxide::page::ScreenshotParams;
+use futures::StreamExt;
+use image::GrayImage;
+use image_compare::Algorithm;
 use pushover_rs::{MessageBuilder, send_pushover_request};
-use tokio::time;
+use tokio::{task, time};
+
+const MERCH_KEYWORDS: &[&str] = &[
+    "merch",
+    "store",
+    "shop",
+    "stock",
+    "buy",
+    "cloth",
+    "shirt",
+    "hood",
+    "tee"
+];
 
 struct WebsiteData {
     url: String,
-    last_response: Option<String>,
+    last_image: Option<GrayImage>,
     merch_already_detected: bool,
 
     // in a row, count the number of times i have been texted, used for cooldown
@@ -22,7 +40,7 @@ impl Debug for WebsiteData {
         f
             .debug_struct("WebsiteData")
             .field("url", &self.url)
-            .field("last_response", &self.last_response.as_ref().map(|r| r.len()))
+            .field("last_response", &self.last_image.as_ref().map(|r| r.len()))
             .field("merch_already_detected", &self.merch_already_detected)
             .field("changes_stacking", &self.changes_stacking)
             .field("cooldown", &self.current_cooldown)
@@ -63,7 +81,7 @@ impl From<&str> for WebsiteData {
     fn from(value: &str) -> Self {
         WebsiteData {
             url: value.to_string(),
-            last_response: None,
+            last_image: None,
             merch_already_detected: false,
 
             changes_stacking: 0,
@@ -75,10 +93,7 @@ impl From<&str> for WebsiteData {
 
 
 #[tokio::main]
-async fn main() {
-    let reqwest_client = reqwest::Client::default();
-
-    let mut interval = time::interval(Duration::from_secs(10));
+async fn main() -> anyhow::Result<()> {
     let mut sites: Vec<WebsiteData> = vec![
         "https://www.kevinabstract.co".into(),
         "https://luckyedwards.com".into(),
@@ -86,84 +101,127 @@ async fn main() {
         "https://shop.holidaybrand.co/".into(),
     ];
 
-    let merch_keywords = [
-        "merch",
-        "store",
-        "shop",
-        "stock",
-        "buy",
-        "cloth",
-        "shirt",
-        "hood",
-        "tee"
-    ];
+    let (browser, mut handler) = Browser::launch(
+        BrowserConfigBuilder::default()
+            .request_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+    ).await?;
 
+    let _ = task::spawn(async move {
+        while let Some(h) = handler.next().await {
+            if let Err(e) = h {
+                eprintln!("handler error -> {e:?}");
+                break;
+            }
+        }
+    });
+
+    let page = browser.new_page("about:blank").await?;
+    page.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36").await?;
+
+    let mut interval = time::interval(Duration::from_secs(25));
     loop {
         interval.tick().await;
 
         for site in &mut sites {
-            println!("{site:?}");
-            if !site.should_request() {
-                continue;
-            }
-
-            let request = reqwest_client
-                .get(&site.url)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36")
-                .build()
-                .expect("Failed to build request");
-
-            let response = match reqwest_client.execute(request).await {
-                Ok(o) => o,
-                Err(e) => {
-                    eprint!("Error requesting {} -> {:?}", site.url, e);
-                    continue;
-                }
-            };
-
-            let text = response.text()
-                .await
-                .expect("Failed to receive text from site");
-
-            if Some(&text) == site.last_response.as_ref() {
-                if site.total_cooldowns != 0 {
-                    site.total_cooldowns -= 1;
-                }
-
-                site.changes_stacking = 0;
-
-                continue;
-            }
-
-            let first_run = site.last_response.is_none();
-            let mut merch_newly_detected = merch_keywords.iter()
-                .any(|k| text.to_lowercase().contains(k));
-
-            if site.merch_already_detected {
-                merch_newly_detected = false;
-            } else {
-                site.merch_already_detected = merch_newly_detected;
-            }
-
-            site.last_response = Some(text);
-            if first_run {
-                continue;
-            }
-
-            if site.should_notify() {
-                notify(&site, if merch_newly_detected { 1 } else { 0 }).await;
+            if let Err(e) = check_site(&page, site).await {
+                eprintln!("Error checking site {} -> {e:?}", site.url);
             }
         }
+
+        page.goto("about:blank").await?;
     }
 }
 
-async fn notify(website: &WebsiteData, priority: i8) {
+async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
+    println!("{site:?}");
+    if !site.should_request() {
+        return Ok(());
+    }
+
+    let first_run = site.last_image.is_none();
+
+    page.goto(&site.url).await?;
+    page.wait_for_navigation().await?;
+
+    let new_screenshot_bytes = page.screenshot(
+        ScreenshotParams::default()
+        // .clip(
+        //     Viewport::builder()
+        //         .width(1920)
+        //         .height(1080)
+        //         .x(0)
+        //         .y(0)
+        //         .scale(1)
+        //         .build()
+        //         .expect("screenshot builder invalid")
+        // )
+    ).await?;
+
+    let last_image = site.last_image.take();
+    let (score, new_image) = task::spawn_blocking(move || -> anyhow::Result<(f64, GrayImage)> {
+        let new_image = image::load_from_memory(new_screenshot_bytes.as_slice())?.into_luma8();
+
+        let Some(last_image) = last_image else {
+            return Ok((0.0, new_image));
+        };
+
+        let comparison = image_compare::gray_similarity_structure(&Algorithm::MSSIMSimple, &new_image, &last_image)?;
+        Ok((comparison.score, new_image))
+    }).await??;
+
+    println!("Got comparison score of {} for website {}", score, site.url);
+
+    site.last_image = Some(new_image);
+    if score <= 0.05 {
+        if site.total_cooldowns != 0 {
+            site.total_cooldowns -= 1;
+        }
+
+        site.changes_stacking = 0;
+
+        return Ok(());
+    }
+
+    let text = page.content().await?.to_lowercase();
+    let mut merch_newly_detected = MERCH_KEYWORDS.iter()
+        .any(|k| text.contains(k));
+
+    if site.merch_already_detected {
+        merch_newly_detected = false;
+    } else {
+        site.merch_already_detected = merch_newly_detected;
+    }
+
+    if first_run {
+        return Ok(());
+    }
+
+    let (priority, message) = if merch_newly_detected {
+        (1, format!("Detected merch! Difference rating of {score}"))
+    } else {
+        (0, format!("Difference rating of {score}"))
+    };
+
+    if site.should_notify() {
+        notify(&site, priority, &message).await;
+    }
+
+    Ok(())
+}
+
+async fn notify(
+    website: &WebsiteData,
+    priority: i8,
+    message: &str,
+) {
     println!("Notifying for {}...", website.url);
 
     let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let now = duration_since_epoch.as_secs();
 
-    let message = MessageBuilder::new("ucj95tt4g9nwx5zjacepr2brsyi3ot", "a4sijp87u6n8sr7otzvg3r6jbdm4h6", &website.url)
+    let message = MessageBuilder::new("ucj95tt4g9nwx5zjacepr2brsyi3ot", "a4sijp87u6n8sr7otzvg3r6jbdm4h6", message)
         .set_title("Website Change Detected")
         .set_url(&website.url, None)
         .add_device("iphone")
@@ -173,5 +231,34 @@ async fn notify(website: &WebsiteData, priority: i8) {
 
     if let Err(e) = send_pushover_request(message).await {
         eprint!("Error sending message {e:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+    use chromiumoxide::Browser;
+    use chromiumoxide::browser::BrowserConfigBuilder;
+    use futures::StreamExt;
+    use tokio::task;
+
+    #[tokio::test]
+    async fn test_fucking_chrome_oxide() {
+        let (browser, mut handler) = Browser::launch(
+            BrowserConfigBuilder::default()
+                .request_timeout(Duration::from_secs(5))
+                .build()
+                .unwrap()
+        ).await.unwrap();
+
+        let h = task::spawn(async move {
+            while let Some(h) = handler.next().await {
+                h.unwrap();
+            }
+        });
+
+        let page = browser.new_page("https://www.google.com").await.unwrap();
+
+        h.await.unwrap();
     }
 }
