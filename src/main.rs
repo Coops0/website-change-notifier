@@ -8,6 +8,7 @@ use futures::StreamExt;
 use image::RgbImage;
 use pushover_rs::{MessageBuilder, send_pushover_request};
 use tokio::{task, time};
+use tokio::time::sleep;
 
 const MERCH_KEYWORDS: &[&str] = &[
     "merch",
@@ -29,6 +30,8 @@ struct WebsiteData {
     current_cooldown: u16,
     // counts the number of cooldowns recieved, decreases one per successful blank/cycle
     total_cooldowns: u32,
+
+    total_runs: u32,
 }
 
 impl Debug for WebsiteData {
@@ -79,6 +82,7 @@ impl From<&str> for WebsiteData {
             url: value.to_string(),
             last_image: None,
             merch_already_detected: false,
+            total_runs: 0,
 
             changes_stacking: 0,
             current_cooldown: 0,
@@ -136,42 +140,48 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    site.total_runs += 1;
+
     let first_run = site.last_image.is_none();
-
-    page.goto(&site.url).await?;
-    page.wait_for_navigation().await?;
-
-    let new_screenshot_bytes = page.screenshot(ScreenshotParams::default()).await?;
-
     let last_image = site.last_image.take();
 
-    let (score, new_image) = task::spawn_blocking(move || -> anyhow::Result<(f64, RgbImage)> {
-        let new_image = image::load_from_memory(new_screenshot_bytes.as_slice())?.into_rgb8();
+    let mut screenshot_scores = vec![];
+    for _ in 0..3 {
+        let result = create_screenshot(page, site, &last_image).await?;
+        if result.0 > 0.98 {
+            screenshot_scores.push(result);
+            break;
+        }
 
-        let Some(last_image) = last_image else {
-            return Ok((0.0, new_image));
-        };
+        screenshot_scores.push(result);
+        sleep(Duration::from_millis(250)).await;
+    }
 
-        let comparison = image_compare::rgb_hybrid_compare(&new_image, &last_image)?;
-        Ok((comparison.score, new_image))
-    }).await??;
+    let only_scores = screenshot_scores.iter().map(|(s, _)| *s).collect::<Vec<f64>>();
+    let average = only_scores.iter().sum::<f64>() / only_scores.len() as f64;
 
-    println!("Got comparison score of {} for website {}", score, site.url);
+    println!("Got comparison scores of {:?} for website {}. average = {average}", only_scores, site.url);
 
-    site.last_image = Some(new_image);
+    let all_changed = only_scores.into_iter().all(|s| s < 0.98);
+    let most_similar = screenshot_scores.into_iter()
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+        .expect("no screenshots?");
+
+    site.last_image = Some(most_similar.1);
 
     // if get css of page then it always has shop or store or whatever
     let text = page.evaluate("document.body.outerHTML").await?.into_value::<String>()?.to_lowercase();
 
     let mut merch_newly_detected = MERCH_KEYWORDS.iter()
         .any(|k| text.contains(k));
+
     if site.merch_already_detected {
         merch_newly_detected = false;
     } else {
         site.merch_already_detected = merch_newly_detected;
     }
 
-    if score > 0.95 && !merch_newly_detected {
+    if !all_changed && !merch_newly_detected {
         if site.total_cooldowns != 0 {
             site.total_cooldowns -= 1;
         }
@@ -185,19 +195,39 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    page.save_screenshot(ScreenshotParams::default(), format!("test_{}.png", site.url.get(10..12).unwrap())).await?;
+    // page.save_screenshot(ScreenshotParams::builder().omit_background(true).build(), format!("test_{}.png", site.url.get(10..12).unwrap())).await?;
 
     let (priority, message) = if merch_newly_detected {
-        (1, format!("Detected merch! Difference rating of {score}"))
+        (1, format!("Detected merch! Difference rating avg of {average}"))
     } else {
-        (0, format!("Difference rating of {score}"))
+        (0, format!("Difference rating avg of {average}"))
     };
 
-    if site.should_notify() {
-        notify(&site, priority, &message).await;
+    if site.total_runs > 3 && site.should_notify() {
+        notify(site, priority, &message).await;
     }
 
     Ok(())
+}
+
+async fn create_screenshot(page: &Page, site: &mut WebsiteData, last_image: &Option<RgbImage>) -> anyhow::Result<(f64, RgbImage)> {
+    page.goto(&site.url).await?;
+    page.wait_for_navigation().await?;
+
+    let new_screenshot_bytes = page.screenshot(ScreenshotParams::builder().omit_background(true).build()).await?;
+
+    let t = task::block_in_place(move || -> anyhow::Result<(f64, RgbImage)> {
+        let screenshot_image = image::load_from_memory(&new_screenshot_bytes)?.into_rgb8();
+
+        let comparison = match last_image {
+            Some(ref last_image) => image_compare::rgb_hybrid_compare(&screenshot_image, last_image)?.score,
+            None => 1.0,
+        };
+
+        Ok((comparison, screenshot_image))
+    })?;
+
+    Ok(t)
 }
 
 async fn notify(
@@ -278,7 +308,7 @@ mod tests {
         async fn navigate(p: &Page) -> Vec<u8> {
             let page = p.goto("https://www.kevinabstract.co").await.unwrap();
             p.wait_for_navigation().await.unwrap();
-            page.screenshot(ScreenshotParams::default()).await.unwrap()
+            page.screenshot(ScreenshotParams::builder().omit_background(true).build()).await.unwrap()
         }
 
         let first_image = navigate(&page).await;
@@ -305,6 +335,5 @@ mod tests {
                 assert!(comp > 0.98);
             }
         }).await.unwrap();
-
     }
 }
