@@ -3,11 +3,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chromiumoxide::{Browser, Page};
 use chromiumoxide::browser::BrowserConfigBuilder;
+use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::page::ScreenshotParams;
 use futures::StreamExt;
 use image::RgbImage;
 use pushover_rs::{MessageBuilder, send_pushover_request};
-use tokio::{task, time};
+use tokio::task;
 use tokio::time::sleep;
 
 const MERCH_KEYWORDS: &[&str] = &[
@@ -21,14 +22,25 @@ const MERCH_KEYWORDS: &[&str] = &[
 
 struct WebsiteData {
     url: String,
+    /// scripts to run on the client of the site
+    script: Vec<String>,
+    /// element to take screenshot of instead of page
+    screenshot_selector: Option<String>,
+    /// wait before loading site
+    wait: u64,
+    /// 0-1 to notify changes for, 0 being completely changed, 1 being no changes
+    threshold: f64,
+    /// maximum amount of times to confirm that a change was detected
+    max_retries: u32,
+
     last_image: Option<RgbImage>,
     merch_already_detected: bool,
 
-    // in a row, count the number of times i have been texted, used for cooldown
+    /// in a row, count the number of times i have been texted, used for cooldown
     changes_stacking: u8,
-    // if notified consecutively >= 4 times, add a cooldown that increases more with each cooldown
+    /// if notified consecutively >= 4 times, add a cooldown that increases more with each cooldown
     current_cooldown: u16,
-    // counts the number of cooldowns recieved, decreases one per successful blank/cycle
+    /// counts the number of cooldowns recieved, decreases one per successful blank/cycle
     total_cooldowns: u32,
 
     total_runs: u32,
@@ -44,6 +56,7 @@ impl Debug for WebsiteData {
             .field("changes_stacking", &self.changes_stacking)
             .field("cooldown", &self.current_cooldown)
             .field("cooldowns", &self.total_cooldowns)
+            .field("total_runs", &self.total_runs)
             .finish()
     }
 }
@@ -74,31 +87,80 @@ impl WebsiteData {
 
         !banned
     }
+
+    fn with_script<S: ToString>(mut self, script: S) -> Self {
+        self.script.push(format!("()=>{{{}}}", script.to_string()));
+        self
+    }
+
+    fn with_selector<S: ToString>(mut self, selector: S) -> Self {
+        self.screenshot_selector = Some(selector.to_string());
+        self
+    }
+
+    fn remove_elements<'a, V: Into<Vec<&'a str>>>(self, elements: V) -> Self {
+        let s = format!("document.querySelectorAll('{}')?.forEach(a => a?.remove());", elements.into().join(", "));
+        println!("created script of {s}");
+
+        self.with_script(s)
+    }
+
+    fn with_wait(mut self, wait: u64) -> Self {
+        self.wait = wait;
+        self
+    }
+
+    fn with_threshold(mut self, threshold: f64) -> Self {
+        self.threshold = threshold;
+        self
+    }
+
+    fn with_retries(mut self, retries: u32) -> Self {
+        self.max_retries = retries;
+        self
+    }
 }
 
-impl From<&str> for WebsiteData {
-    fn from(value: &str) -> Self {
-        WebsiteData {
-            url: value.to_string(),
-            last_image: None,
-            merch_already_detected: false,
-            total_runs: 0,
+fn wd(url: &str) -> WebsiteData {
+    WebsiteData {
+        url: url.to_string(),
+        script: vec![],
+        screenshot_selector: None,
+        wait: 0,
+        threshold: 0.99,
+        max_retries: 3,
 
-            changes_stacking: 0,
-            current_cooldown: 0,
-            total_cooldowns: 0,
-        }
+        last_image: None,
+        merch_already_detected: false,
+        total_runs: 0,
+
+        changes_stacking: 0,
+        current_cooldown: 0,
+        total_cooldowns: 0,
     }
 }
 
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let ka_script = "document.body.style.background='black';";
+
     let mut sites: Vec<WebsiteData> = vec![
-        "https://www.kevinabstract.co".into(),
-        "https://luckyedwards.com".into(),
-        "https://videostore.world/".into(),
-        "https://shop.holidaybrand.co/".into(),
+        wd("https://www.kevinabstract.co")
+            .with_script(ka_script)
+            .remove_elements(["footer"]),
+        wd("https://luckyedwards.com")
+            .with_script(ka_script)
+            .remove_elements(["footer"]),
+        wd("https://blonded.co/")
+            .remove_elements(["video", ".js-header-date-time", ".FooterNotice", "img", "iframe", ".Video__pusher", "#shopify-section-section-footer"]),
+        wd("https://jid.manheadmerch.com/")
+            // this is so dumb lmao, reconstruct page based only product list
+            .with_script(r#"document.documentElement.setHTML(Array.from(document.querySelectorAll(".col-sm-6")).map(t=>{let e=t.getAttribute("data-alpha"),l=t.getAttribute("data-price");return e&&l?`${e}-${l}`:null}).filter(t=>t).join(", "));"#),
+        wd("https://sabapivot.store/collections/all")
+            .remove_elements(["img"]),
+        wd("https://videostore.world/"),
+        wd("https://shop.holidaybrand.co/"),
     ];
 
     let (browser, mut handler) = Browser::launch(
@@ -120,9 +182,8 @@ async fn main() -> anyhow::Result<()> {
     let page = browser.new_page("about:blank").await?;
     page.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36").await?;
 
-    let mut interval = time::interval(Duration::from_secs(25));
     loop {
-        interval.tick().await;
+        println!("--- CYCLE START ---");
 
         for site in &mut sites {
             if let Err(e) = check_site(&page, site).await {
@@ -130,7 +191,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
+        println!("--- CYCLE END ---");
+
         page.goto("about:blank").await?;
+
+        sleep(Duration::from_secs(25)).await;
     }
 }
 
@@ -146,9 +211,9 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
     let last_image = site.last_image.take();
 
     let mut screenshot_scores = vec![];
-    for _ in 0..3 {
+    for _ in 0..site.max_retries {
         let result = create_screenshot(page, site, &last_image).await?;
-        if result.0 > 0.98 {
+        if result.0 > site.threshold {
             screenshot_scores.push(result);
             break;
         }
@@ -162,7 +227,7 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
 
     println!("Got comparison scores of {:?} for website {}. average = {average}", only_scores, site.url);
 
-    let all_changed = only_scores.into_iter().all(|s| s < 0.98);
+    let all_changed = only_scores.into_iter().all(|s| s < site.threshold);
     let most_similar = screenshot_scores.into_iter()
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
         .expect("no screenshots?");
@@ -181,21 +246,19 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
         site.merch_already_detected = merch_newly_detected;
     }
 
+    // idk why this # randomly happens it's really annoying though
     if !all_changed && !merch_newly_detected {
         if site.total_cooldowns != 0 {
             site.total_cooldowns -= 1;
         }
 
         site.changes_stacking = 0;
-
         return Ok(());
     }
 
     if first_run {
         return Ok(());
     }
-
-    // page.save_screenshot(ScreenshotParams::builder().omit_background(true).build(), format!("test_{}.png", site.url.get(10..12).unwrap())).await?;
 
     let (priority, message) = if merch_newly_detected {
         (1, format!("Detected merch! Difference rating avg of {average}"))
@@ -214,13 +277,36 @@ async fn create_screenshot(page: &Page, site: &mut WebsiteData, last_image: &Opt
     page.goto(&site.url).await?;
     page.wait_for_navigation().await?;
 
-    let new_screenshot_bytes = page.screenshot(ScreenshotParams::builder().omit_background(true).build()).await?;
+    for script in &site.script {
+        let _ = page.evaluate(script.as_str()).await;
+    }
+
+    if site.wait != 0 {
+        sleep(Duration::from_millis(site.wait)).await;
+    }
+
+    let new_screenshot_bytes = if let Some(ref selector) = site.screenshot_selector {
+        page.find_element(selector)
+            .await?
+            .screenshot(CaptureScreenshotFormat::Png)
+            .await?
+    } else {
+        page.screenshot(ScreenshotParams::builder()
+            .omit_background(true)
+            .full_page(true)
+            .build()
+        ).await?
+    };
+
+    // let a: &[u8] = new_screenshot_bytes.as_ref();
+    // tokio::fs::write(format!("test_{}.png", site.url.get(13..16).unwrap()), a).await?;
 
     let t = task::block_in_place(move || -> anyhow::Result<(f64, RgbImage)> {
         let screenshot_image = image::load_from_memory(&new_screenshot_bytes)?.into_rgb8();
 
         let comparison = match last_image {
-            Some(ref last_image) => image_compare::rgb_hybrid_compare(&screenshot_image, last_image)?.score,
+            // if the function fails, then that means the image sizes were different, which means the site was 100% updated
+            Some(ref last_image) => image_compare::rgb_hybrid_compare(&screenshot_image, last_image).map(|r| r.score).unwrap_or(0.0),
             None => 1.0,
         };
 
