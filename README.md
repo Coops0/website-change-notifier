@@ -3,8 +3,16 @@
 
 Create a .env file with "PUSHOVER_USER_KEY" and "PUSHOVER_APP_TOKEN".
 
-Create a sites.toml file, there is an example in the repository.
+Create a sites.toml file with the following format.
 ```toml
+# delete to disable
+merch-keywords = [
+    "merch",
+    "store",
+    "shop",
+    "buy",
+]
+
 [[sites]]
 url = "https://www.kevinabstract.co"
 scripts = ["document.body.style.background='black';"] # add a js script to run when the site loads
