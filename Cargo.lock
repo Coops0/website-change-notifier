@@ -1374,22 +1374,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shitty-website-watcher-KA"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chromiumoxide",
- "dotenv",
- "futures",
- "image",
- "image-compare",
- "pushover-rs",
- "serde",
- "tokio",
- "toml",
-]
-
-[[package]]
 name = "signal-hook-registry"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1844,6 +1828,23 @@ checksum = "9b85cbef8c220a6abc02aefd892dfc0fc23afb1c6a426316ec33253a3877249b"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "website-change-notifier"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chromiumoxide",
+ "dotenv",
+ "futures",
+ "image",
+ "image-compare",
+ "once_cell",
+ "pushover-rs",
+ "serde",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

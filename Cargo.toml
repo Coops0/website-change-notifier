@@ -1,5 +1,5 @@
 [package]
-name = "shitty-website-watcher-KA"
+name = "website-change-notifier"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,5 +15,6 @@ image-compare = "0.3.1"
 dotenv = "0.15.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8.2"
+once_cell = "1.18.0"
 
 futures = "0.3.28" # needed for chrome oxide tokio handler thread

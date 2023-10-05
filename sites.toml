@@ -1,12 +1,24 @@
+# remove to disable
+merch-keywords = [
+    "merch",
+    "store",
+    "shop",
+    "buy",
+    "clothing",
+    "clothes",
+]
+
 [[sites]]
 url = "https://www.kevinabstract.co"
 scripts = ["document.body.style.background='black';"]
 remove = ["footer"]
+threshold = 0.999
 
 [[sites]]
 url = "https://luckyedwards.com"
 scripts = ["document.body.style.background='black';"]
 remove = ["footer"]
+threshold = 0.999
 
 [[sites]]
 url = "https://blonded.co/"
@@ -16,6 +28,8 @@ remove = ["video", ".js-header-date-time", ".FooterNotice", "img", "iframe", ".V
 url = "https://jid.manheadmerch.com/"
 # this is so dumb lmao, reconstruct page based only product list cause this website fucking sucks
 scripts = ["""document.documentElement.setHTML(Array.from(document.querySelectorAll('.col-sm-6')).map(t=>{let e=t.getAttribute('data-alpha'),l=t.getAttribute('data-price');return e&&l?`${e}-${l}`:null}).filter(t=>t).join(', '));"""]
+# this is literally always text so any change should be very noticable
+threshold = 0.99999
 
 [[sites]]
 url = "https://sabapivot.store/collections/all"

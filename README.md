@@ -1,5 +1,5 @@
 # Website Change Notifier
-## Send a pushover notification when a website visiblity changes
+## Send a pushover notification when a website visibly changes
 
 Create a .env file with "PUSHOVER_USER_KEY" and "PUSHOVER_APP_TOKEN".
 
@@ -16,20 +16,6 @@ confirmations = 4 # after noticing a change, how many times should refresh & ver
 
 [[sites]]
 url = "https://blonded.co"
-```
-
-
-Or In the main file, edit the `sites` array to your own sites. All functions are documented in the code as well.
-
-```rust
-    wd("https://www.kevinabstract.co")
-        .add_script("document.querySelector('body').style.background = 'blue';") 
-        .selector(".product-list") 
-        .remove_elements([".cookie-consent-banner", "nav", "#button-1"]) 
-        .wait(300) 
-        .threshold(0.985) 
-        .confirmations(4) 
-        .build()
 ```
 
 - It detects if merch is newly detected and will send a special notification (can be turned off).

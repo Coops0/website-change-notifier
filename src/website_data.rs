@@ -1,130 +1,50 @@
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 
 use image::RgbImage;
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
-pub struct WebsiteDataBuilder {
+pub struct WebsiteDataConfig {
     url: String,
 
-    #[serde(skip)]
-    inner_scripts: Option<Vec<String>>,
-
-    selector: Option<String>,
-    #[serde(default)]
-    wait: u64,
-    #[serde(default = "WebsiteDataBuilder::default_threshold")]
-    threshold: f64,
-    #[serde(default = "WebsiteDataBuilder::default_max_confirms")]
-    confirmations: u32,
-
-    // only used to be converted later
-
-    // Automatically converted normally, this is used for toml deserialization
-    #[serde(rename = "remove")]
-    remove_elements: Option<Vec<String>>,
-    // used for deserialization, needs to still be handled to format
+    /// add a js script to run when the site loads
     #[serde(rename = "scripts")]
     scripts: Option<Vec<String>>,
+    /// capture a specific element instead of the whole page (don't use elements that overflow page)
+    selector: Option<String>,
+    /// automatically remove elements when the page loads
+    #[serde(rename = "remove")]
+    remove_elements: Option<Vec<String>>,
+    /// wait x ms before screenshotting to allow dynamic page to load
+    #[serde(default)]
+    wait: u64,
+    /// when to notify of the change of the site from 0-1, with 0 being totally different, and 1 being the exact same
+    #[serde(default = "WebsiteDataConfig::default_threshold")]
+    threshold: f64,
+    /// after noticing a change, how many times should refresh & verify that the site actually changed
+    #[serde(default = "WebsiteDataConfig::default_confirmations")]
+    confirmations: u32,
 }
 
-impl Default for WebsiteDataBuilder {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            inner_scripts: None,
-            scripts: None,
-            selector: None,
-            wait: 0,
-            threshold: WebsiteDataBuilder::default_threshold(),
-            confirmations: WebsiteDataBuilder::default_max_confirms(),
-            remove_elements: None,
-        }
-    }
-}
-
-impl From<WebsiteDataBuilder> for WebsiteData {
-    fn from(value: WebsiteDataBuilder) -> Self {
-        value.build()
-    }
-}
-
-/// shorthand of creating builder w url
-pub fn wd(url: &str) -> WebsiteDataBuilder {
-    WebsiteDataBuilder {
-        url: url.to_string(),
-        ..WebsiteDataBuilder::default()
-    }
-}
-
-impl WebsiteDataBuilder {
+impl WebsiteDataConfig {
     fn default_threshold() -> f64 {
-        0.99
+        0.995
     }
 
-    fn default_max_confirms() -> u32 {
+    fn default_confirmations() -> u32 {
         3
     }
 }
 
-impl WebsiteDataBuilder {
-    /// sets url of the site
-    pub fn url<S: ToString>(mut self, url: S) -> Self {
-        self.url = url.to_string();
-        self
+impl WebsiteDataConfig {
+    fn format_script(script: String) -> String {
+        format!("()=>{{{}}}", script)
     }
 
-    fn inner_add_script(&mut self, script: String) {
-        self.inner_scripts
-            .get_or_insert_with(Vec::new)
-            .push(format!("()=>{{{}}}", script));
-    }
-
-    /// add a javascript script to run when the site loads
-    pub fn add_script<S: ToString>(mut self, script: S) -> Self {
-        self.inner_add_script(script.to_string());
-        self
-    }
-
-    /// capture a specific element instead of the whole page (prolly don't use it kinda sucks)
-    pub fn selector<S: ToString>(mut self, selector: S) -> Self {
-        self.selector = Some(selector.to_string());
-        self
-    }
-
-    fn inner_remove_elements_script(elements: Vec<String>) -> String {
-        format!("document.querySelectorAll('{}')?.forEach(a => a?.remove());", elements.join(", "))
-    }
-
-    /// automatically remove elements when the page loads
-    pub fn remove_elements<S: Into<String>, V: Into<Vec<S>>>(self, elements: V) -> Self {
-        self.add_script(
-            WebsiteDataBuilder::inner_remove_elements_script(
-                elements.into()
-                    .into_iter()
-                    .map(Into::into)
-                    .collect()
-            )
-        )
-    }
-
-
-    /// wait x ms before screenshotting to allow shit to load
-    pub fn wait(mut self, wait: u64) -> Self {
-        self.wait = wait;
-        self
-    }
-
-    /// when to notify of the change of the site from 0-1, with 0 being totally different, and 1 being the exact same
-    pub fn threshold(mut self, threshold: f64) -> Self {
-        self.threshold = threshold;
-        self
-    }
-
-    /// after noticing a change, how many times should refresh & verify that the site actually changed
-    pub fn confirmations(mut self, confirms: u32) -> Self {
-        self.confirmations = confirms;
-        self
+    fn format_remove_elements(elements: Vec<String>) -> String {
+       WebsiteDataConfig::format_script(
+           format!("document.querySelectorAll('{}')?.forEach(a => a?.remove());", elements.join(", "))
+       )
     }
 
     pub fn build(mut self) -> WebsiteData {
@@ -140,19 +60,21 @@ impl WebsiteDataBuilder {
             panic!("threshold has to be > 0 & < 1")
         }
 
+        let mut scripts = vec![];
+
         if let Some(elements) = self.remove_elements.take() {
-            self.inner_add_script(WebsiteDataBuilder::inner_remove_elements_script(elements));
+            scripts.push(WebsiteDataConfig::format_remove_elements(elements));
         }
 
-        if let Some(scripts) = self.scripts.take() {
-            for script in scripts {
-                self.inner_add_script(script);
+        if let Some(new_scripts) = self.scripts.take() {
+            for script in new_scripts {
+                scripts.push(WebsiteDataConfig::format_script(script));
             }
         }
 
         WebsiteData {
             url: self.url,
-            scripts: self.inner_scripts,
+            scripts,
             screenshot_selector: self.selector,
             wait: self.wait,
             threshold: self.threshold,
@@ -171,7 +93,7 @@ impl WebsiteDataBuilder {
 #[derive(Debug)]
 pub struct WebsiteData {
     url: String,
-    scripts: Option<Vec<String>>,
+    scripts: Vec<String>,
     screenshot_selector: Option<String>,
     wait: u64,
     threshold: f64,
@@ -190,8 +112,9 @@ pub struct WebsiteData {
     total_runs: u64,
 }
 
+// <editor-fold desc="Website data helper functions">
 impl WebsiteData {
-    pub fn scripts(&self) -> &Option<Vec<String>> {
+    pub fn scripts(&self) -> &Vec<String> {
         &self.scripts
     }
     pub fn url(&self) -> &str {
@@ -218,6 +141,7 @@ impl WebsiteData {
         self.total_runs
     }
 }
+// </editor-fold>
 
 impl WebsiteData {
     pub fn run(&mut self) {

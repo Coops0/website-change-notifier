@@ -7,59 +7,60 @@ use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::page::ScreenshotParams;
 use futures::StreamExt;
 use image::RgbImage;
+use once_cell::sync::OnceCell;
 use pushover_rs::{MessageBuilder, send_pushover_request};
 use serde::Deserialize;
 use tokio::task;
 use tokio::time::sleep;
 
-use website_data::{wd, WebsiteData};
-use crate::website_data::WebsiteDataBuilder;
+use website_data::WebsiteData;
+
+use crate::website_data::WebsiteDataConfig;
 
 mod website_data;
 
-/// set this to = &[]; if you don't want special notifications if merch is newly detected
-const MERCH_KEYWORDS: &[&str] = &[
-    "merch",
-    "store",
-    "shop",
-    "buy",
-    "clothing",
-    "clothes",
-];
+static PUSHOVER_KEYS: OnceCell<(String, String)> = OnceCell::new();
+static MERCH_KEYWORDS: OnceCell<Vec<String>> = OnceCell::new();
 
 #[derive(Deserialize)]
 struct SitesConfig {
-    sites: Option<Vec<WebsiteDataBuilder>>,
+    sites: Vec<WebsiteDataConfig>,
+    #[serde(default)]
+    merch_keywords: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().expect("no dotenv file found");
 
+    let sites_config: SitesConfig = toml::from_str(
+        &tokio::fs::read_to_string("./sites.toml").await?
+    )?;
 
-    // **EDIT HERE**
-    let mut sites: Vec<WebsiteData> = vec![
+    println!("Loaded {} sites from toml file", sites_config.sites.len());
 
-    ];
+    let _ = MERCH_KEYWORDS.set(sites_config.merch_keywords);
 
-    if let Ok(s) = tokio::fs::read_to_string("./sites.toml").await {
-        let sites_config: SitesConfig = toml::from_str(&s)?;
-        if let Some(read_sites) = sites_config.sites {
-            println!("Loaded {} sites from toml file", read_sites.len());
-
-            for site in read_sites {
-                sites.push(site.build());
-            }
-        }
-    }
+    let sites = sites_config.sites
+        .into_iter()
+        .map(WebsiteDataConfig::build)
+        .collect::<Vec<WebsiteData>>();
 
     if sites.is_empty() {
         panic!("no sites added")
     }
 
-    env::var("PUSHOVER_USER_KEY").expect("no pushover user key env var");
-    env::var("PUSHOVER_APP_TOKEN").expect("no pushover app token env var");
+    let keys = (
+        env::var("PUSHOVER_USER_KEY").expect("no pushover user key env var"),
+        env::var("PUSHOVER_APP_TOKEN").expect("no pushover app token env var")
+    );
 
+    let _ = PUSHOVER_KEYS.set(keys);
+
+    run_browser(sites).await
+}
+
+async fn run_browser(mut sites: Vec<WebsiteData>) -> anyhow::Result<()> {
     let (browser, mut handler) = Browser::launch(
         BrowserConfigBuilder::default()
             .request_timeout(Duration::from_secs(5))
@@ -67,7 +68,8 @@ async fn main() -> anyhow::Result<()> {
             .unwrap()
     ).await?;
 
-    let _ = task::spawn(async move {
+    #[allow(clippy::let_underscore_future)]
+        let _ = task::spawn(async move {
         while let Some(h) = handler.next().await {
             if let Err(e) = h {
                 eprintln!("handler error -> {e:?}");
@@ -88,9 +90,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        println!("--- CYCLE END ---");
-
         page.goto("about:blank").await?;
+        println!("--- CYCLE END ---");
 
         sleep(Duration::from_secs(25)).await;
     }
@@ -134,7 +135,9 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
     // if get css of page then it always has shop or store or whatever
     let text = page.evaluate("document.body.outerHTML").await?.into_value::<String>()?.to_lowercase();
 
-    let mut merch_newly_detected = MERCH_KEYWORDS.iter()
+    let mut merch_newly_detected = MERCH_KEYWORDS.get()
+        .unwrap()
+        .iter()
         .any(|k| text.contains(k));
 
     // if merch is already detected before, its not newly detected, otherwise set the merch already detected struct value to the new one
@@ -168,10 +171,8 @@ async fn create_screenshot(page: &Page, site: &mut WebsiteData, last_image: &Opt
     page.wait_for_navigation().await?;
 
     // run all scripts
-    if let Some(scripts) = site.scripts() {
-        for script in scripts {
-            let _ = page.evaluate(script.as_str()).await;
-        }
+    for script in site.scripts() {
+        let _ = page.evaluate(script.as_str()).await;
     }
 
     if site.wait() != 0 {
@@ -220,7 +221,9 @@ async fn notify(
     let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let now = duration_since_epoch.as_secs();
 
-    let message = MessageBuilder::new(&env::var("PUSHOVER_USER_KEY").unwrap(), &env::var("PUSHOVER_APP_TOKEN").unwrap(), message)
+    let (user_key, app_token) = PUSHOVER_KEYS.get().unwrap();
+
+    let message = MessageBuilder::new(user_key, app_token, message)
         .set_title("Website Change Detected")
         .set_url(website.url(), None)
         .set_timestamp(now)
