@@ -1,14 +1,14 @@
-use std::fs;
+use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chromiumoxide::{Browser, Page};
 use chromiumoxide::browser::BrowserConfigBuilder;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::page::ScreenshotParams;
-use dotenv_codegen::dotenv;
 use futures::StreamExt;
 use image::RgbImage;
 use pushover_rs::{MessageBuilder, send_pushover_request};
+use serde::Deserialize;
 use tokio::task;
 use tokio::time::sleep;
 
@@ -27,44 +27,38 @@ const MERCH_KEYWORDS: &[&str] = &[
     "clothes",
 ];
 
+#[derive(Deserialize)]
+struct SitesConfig {
+    sites: Option<Vec<WebsiteDataBuilder>>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenv::dotenv().expect("no dotenv file found");
+
+
     // **EDIT HERE**
     let mut sites: Vec<WebsiteData> = vec![
-        wd("https://www.kevinabstract.co")
-            .add_script("document.body.style.background='black';")
-            .remove_elements(["footer"])
-            .build(),
-        wd("https://luckyedwards.com")
-            .add_script("document.body.style.background='black';")
-            .remove_elements(["footer"])
-            .build(),
-        wd("https://blonded.co/")
-            .remove_elements(["video", ".js-header-date-time", ".FooterNotice", "img", "iframe", ".Video__pusher", "#shopify-section-section-footer"])
-            .build(),
-        wd("https://jid.manheadmerch.com/")
-            // this is so dumb lmao, reconstruct page based only product list cause this website fucking sucks
-            .add_script(r#"document.documentElement.setHTML(Array.from(document.querySelectorAll(".col-sm-6")).map(t=>{let e=t.getAttribute("data-alpha"),l=t.getAttribute("data-price");return e&&l?`${e}-${l}`:null}).filter(t=>t).join(", "));"#)
-            .build(),
-        wd("https://sabapivot.store/collections/all")
-            .remove_elements(["img"])
-            .build(),
-        wd("https://videostore.world/").build(),
-        wd("https://shop.holidaybrand.co/").build(),
+
     ];
 
     if let Ok(s) = tokio::fs::read_to_string("./sites.toml").await {
-        let read_sites: Vec<WebsiteDataBuilder> = toml::from_str(&s)?;
-        println!("Loaded {} sites from toml file", read_sites.len());
+        let sites_config: SitesConfig = toml::from_str(&s)?;
+        if let Some(read_sites) = sites_config.sites {
+            println!("Loaded {} sites from toml file", read_sites.len());
 
-        for site in read_sites {
-            sites.push(site.build());
+            for site in read_sites {
+                sites.push(site.build());
+            }
         }
     }
 
     if sites.is_empty() {
         panic!("no sites added")
     }
+
+    env::var("PUSHOVER_USER_KEY").expect("no pushover user key env var");
+    env::var("PUSHOVER_APP_TOKEN").expect("no pushover app token env var");
 
     let (browser, mut handler) = Browser::launch(
         BrowserConfigBuilder::default()
@@ -198,7 +192,7 @@ async fn create_screenshot(page: &Page, site: &mut WebsiteData, last_image: &Opt
     };
 
     // let a: &[u8] = new_screenshot_bytes.as_ref();
-    // tokio::fs::write(format!("test_{}.png", site.url.get(13..16).unwrap()), a).await?;
+    // tokio::fs::write(format!("test_{}.png", site.url().get(13..16).unwrap()), a).await?;
 
     // compare with a few special stuff
     let t = task::block_in_place(move || -> anyhow::Result<(f64, RgbImage)> {
@@ -226,7 +220,7 @@ async fn notify(
     let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let now = duration_since_epoch.as_secs();
 
-    let message = MessageBuilder::new(dotenv!("PUSHOVER_USER_KEY"), dotenv!("PUSHOVER_APP_TOKEN"), message)
+    let message = MessageBuilder::new(&env::var("PUSHOVER_USER_KEY").unwrap(), &env::var("PUSHOVER_APP_TOKEN").unwrap(), message)
         .set_title("Website Change Detected")
         .set_url(website.url(), None)
         .set_timestamp(now)

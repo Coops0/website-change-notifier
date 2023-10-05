@@ -1,0 +1,28 @@
+[[sites]]
+url = "https://www.kevinabstract.co"
+scripts = ["document.body.style.background='black';"]
+remove-elements = ["footer"]
+
+[[sites]]
+url = "https://luckyedwards.com"
+scripts = ["document.body.style.background='black';"]
+remove-elements = ["footer"]
+
+[[sites]]
+url = "https://blonded.co/"
+remove-elements = ["video", ".js-header-date-time", ".FooterNotice", "img", "iframe", ".Video__pusher", "#shopify-section-section-footer"]
+
+[[sites]]
+url = "https://jid.manheadmerch.com/"
+# this is so dumb lmao, reconstruct page based only product list cause this website fucking sucks
+scripts = ["""document.documentElement.setHTML(Array.from(document.querySelectorAll('.col-sm-6')).map(t=>{let e=t.getAttribute('data-alpha'),l=t.getAttribute('data-price');return e&&l?`${e}-${l}`:null}).filter(t=>t).join(', '));"""]
+
+[[sites]]
+url = "https://sabapivot.store/collections/all"
+remove-elements = ["img"]
+
+[[sites]]
+url = "https://videostore.world/"
+
+[[sites]]
+url = "https://shop.holidaybrand.co/"

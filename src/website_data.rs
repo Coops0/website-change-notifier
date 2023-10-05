@@ -4,26 +4,41 @@ use image::RgbImage;
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
-#[serde(default)]
 pub struct WebsiteDataBuilder {
     url: String,
 
-    scripts: Option<Vec<String>>,
+    #[serde(skip)]
+    inner_scripts: Option<Vec<String>>,
+
     screenshot_selector: Option<String>,
+    #[serde(default)]
     wait: u64,
+    #[serde(default = "WebsiteDataBuilder::default_threshold")]
     threshold: f64,
+    #[serde(default = "WebsiteDataBuilder::default_max_confirms")]
     max_confirms: u32,
+
+    // only used to be converted later
+
+    // Automatically converted normally, this is used for toml deserialization
+    #[serde(rename = "remove-elements")]
+    remove_elements: Option<Vec<String>>,
+    // used for deserialization, needs to still be handled to format
+    #[serde(rename = "scripts")]
+    scripts: Option<Vec<String>>,
 }
 
 impl Default for WebsiteDataBuilder {
     fn default() -> Self {
         Self {
             url: String::new(),
+            inner_scripts: None,
             scripts: None,
             screenshot_selector: None,
             wait: 0,
-            threshold: 0.99,
-            max_confirms: 3,
+            threshold: WebsiteDataBuilder::default_threshold(),
+            max_confirms: WebsiteDataBuilder::default_max_confirms(),
+            remove_elements: None,
         }
     }
 }
@@ -43,18 +58,31 @@ pub fn wd(url: &str) -> WebsiteDataBuilder {
 }
 
 impl WebsiteDataBuilder {
+    fn default_threshold() -> f64 {
+        0.99
+    }
+
+    fn default_max_confirms() -> u32 {
+        3
+    }
+}
+
+impl WebsiteDataBuilder {
     /// sets url of the site
     pub fn url<S: ToString>(mut self, url: S) -> Self {
         self.url = url.to_string();
         self
     }
 
+    fn inner_add_script(&mut self, script: String) {
+        self.inner_scripts
+            .get_or_insert_with(Vec::new)
+            .push(format!("()=>{{{}}}", script));
+    }
+
     /// add a javascript script to run when the site loads
     pub fn add_script<S: ToString>(mut self, script: S) -> Self {
-        self.scripts
-            .get_or_insert_with(|| vec![])
-            .push(format!("()=>{{{}}}", script.to_string()));
-
+        self.inner_add_script(script.to_string());
         self
     }
 
@@ -64,9 +92,20 @@ impl WebsiteDataBuilder {
         self
     }
 
+    fn inner_remove_elements_script(elements: Vec<String>) -> String {
+        format!("document.querySelectorAll('{}')?.forEach(a => a?.remove());", elements.join(", "))
+    }
+
     /// automatically remove elements when the page loads
-    pub fn remove_elements<'a, V: Into<Vec<&'a str>>>(self, elements: V) -> Self {
-        self.add_script(format!("document.querySelectorAll('{}')?.forEach(a => a?.remove());", elements.into().join(", ")))
+    pub fn remove_elements<S: Into<String>, V: Into<Vec<S>>>(self, elements: V) -> Self {
+        self.add_script(
+            WebsiteDataBuilder::inner_remove_elements_script(
+                elements.into()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            )
+        )
     }
 
 
@@ -88,14 +127,32 @@ impl WebsiteDataBuilder {
         self
     }
 
-    pub fn build(self) -> WebsiteData {
+    pub fn build(mut self) -> WebsiteData {
         if self.url.is_empty() {
-            panic!("require url to be non blank")
+            panic!("require url to be non blank");
+        }
+
+        if self.max_confirms == 0 {
+            panic!("max confirms has to be >0");
+        }
+
+        if self.threshold < 0.0 || self.threshold > 1.0 {
+            panic!("threshold has to be > 0 & < 1")
+        }
+
+        if let Some(elements) = self.remove_elements.take() {
+            self.inner_add_script(WebsiteDataBuilder::inner_remove_elements_script(elements));
+        }
+
+        if let Some(scripts) = self.scripts.take() {
+            for script in scripts {
+                self.inner_add_script(script);
+            }
         }
 
         WebsiteData {
             url: self.url,
-            scripts: self.scripts,
+            scripts: self.inner_scripts,
             screenshot_selector: self.screenshot_selector,
             wait: self.wait,
             threshold: self.threshold,
@@ -111,6 +168,7 @@ impl WebsiteDataBuilder {
     }
 }
 
+#[derive(Debug)]
 pub struct WebsiteData {
     url: String,
     scripts: Option<Vec<String>>,
@@ -131,22 +189,6 @@ pub struct WebsiteData {
 
     total_runs: u64,
 }
-
-impl Debug for WebsiteData {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f
-            .debug_struct("WebsiteData")
-            .field("url", &self.url)
-            .field("last_response", &self.last_image.as_ref().map(|r| r.len()))
-            .field("merch_already_detected", &self.merch_already_detected)
-            .field("changes_stacking", &self.changes_stacking)
-            .field("cooldown", &self.current_cooldown)
-            .field("cooldowns", &self.total_cooldowns)
-            .field("total_runs", &self.total_runs)
-            .finish()
-    }
-}
-
 
 impl WebsiteData {
     pub fn scripts(&self) -> &Option<Vec<String>> {
