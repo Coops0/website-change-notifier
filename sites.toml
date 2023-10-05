@@ -1,16 +1,16 @@
 [[sites]]
 url = "https://www.kevinabstract.co"
 scripts = ["document.body.style.background='black';"]
-remove-elements = ["footer"]
+remove = ["footer"]
 
 [[sites]]
 url = "https://luckyedwards.com"
 scripts = ["document.body.style.background='black';"]
-remove-elements = ["footer"]
+remove = ["footer"]
 
 [[sites]]
 url = "https://blonded.co/"
-remove-elements = ["video", ".js-header-date-time", ".FooterNotice", "img", "iframe", ".Video__pusher", "#shopify-section-section-footer"]
+remove = ["video", ".js-header-date-time", ".FooterNotice", "img", "iframe", ".Video__pusher", "#shopify-section-section-footer"]
 
 [[sites]]
 url = "https://jid.manheadmerch.com/"
@@ -19,10 +19,15 @@ scripts = ["""document.documentElement.setHTML(Array.from(document.querySelector
 
 [[sites]]
 url = "https://sabapivot.store/collections/all"
-remove-elements = ["img"]
+remove = ["img"]
 
 [[sites]]
 url = "https://videostore.world/"
 
 [[sites]]
 url = "https://shop.holidaybrand.co/"
+
+[[sites]]
+url = "https://store.dollasignworld.com/"
+scripts = ["document.body.style.background='black';"]
+remove = ["header", "img", "footer", ".grecaptcha-badge"]

@@ -8,11 +8,11 @@ Create a sites.toml file, there is an example in the repository.
 [[sites]]
 url = "https://www.kevinabstract.co"
 scripts = ["document.body.style.background='black';"] # add a js script to run when the site loads
-screenshot_selector = ".product-list" # capture a specific element instead of the whole page (don't use elements that overflow page)
-remove-elements = [".cookie-consent-banner", "nav", "#button-1"] # automatically remove elements when the page loads
+selector = ".product-list" # capture a specific element instead of the whole page (don't use elements that overflow page)
+remove = [".cookie-consent-banner", "nav", "#button-1"] # automatically remove elements when the page loads
 wait = 300 # wait x ms before screenshotting to allow dynamic page to load
 threshold = 0.985 # when to notify of the change of the site from 0-1, with 0 being totally different, and 1 being the exact same
-max_confirms = 4 # after noticing a change, how many times should refresh & verify that the site actually changed
+confirmations = 4 # after noticing a change, how many times should refresh & verify that the site actually changed
 
 [[sites]]
 url = "https://blonded.co"

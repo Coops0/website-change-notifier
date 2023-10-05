@@ -10,18 +10,18 @@ pub struct WebsiteDataBuilder {
     #[serde(skip)]
     inner_scripts: Option<Vec<String>>,
 
-    screenshot_selector: Option<String>,
+    selector: Option<String>,
     #[serde(default)]
     wait: u64,
     #[serde(default = "WebsiteDataBuilder::default_threshold")]
     threshold: f64,
     #[serde(default = "WebsiteDataBuilder::default_max_confirms")]
-    max_confirms: u32,
+    confirmations: u32,
 
     // only used to be converted later
 
     // Automatically converted normally, this is used for toml deserialization
-    #[serde(rename = "remove-elements")]
+    #[serde(rename = "remove")]
     remove_elements: Option<Vec<String>>,
     // used for deserialization, needs to still be handled to format
     #[serde(rename = "scripts")]
@@ -34,10 +34,10 @@ impl Default for WebsiteDataBuilder {
             url: String::new(),
             inner_scripts: None,
             scripts: None,
-            screenshot_selector: None,
+            selector: None,
             wait: 0,
             threshold: WebsiteDataBuilder::default_threshold(),
-            max_confirms: WebsiteDataBuilder::default_max_confirms(),
+            confirmations: WebsiteDataBuilder::default_max_confirms(),
             remove_elements: None,
         }
     }
@@ -88,7 +88,7 @@ impl WebsiteDataBuilder {
 
     /// capture a specific element instead of the whole page (prolly don't use it kinda sucks)
     pub fn selector<S: ToString>(mut self, selector: S) -> Self {
-        self.screenshot_selector = Some(selector.to_string());
+        self.selector = Some(selector.to_string());
         self
     }
 
@@ -123,7 +123,7 @@ impl WebsiteDataBuilder {
 
     /// after noticing a change, how many times should refresh & verify that the site actually changed
     pub fn confirmations(mut self, confirms: u32) -> Self {
-        self.max_confirms = confirms;
+        self.confirmations = confirms;
         self
     }
 
@@ -132,7 +132,7 @@ impl WebsiteDataBuilder {
             panic!("require url to be non blank");
         }
 
-        if self.max_confirms == 0 {
+        if self.confirmations == 0 {
             panic!("max confirms has to be >0");
         }
 
@@ -153,10 +153,10 @@ impl WebsiteDataBuilder {
         WebsiteData {
             url: self.url,
             scripts: self.inner_scripts,
-            screenshot_selector: self.screenshot_selector,
+            screenshot_selector: self.selector,
             wait: self.wait,
             threshold: self.threshold,
-            max_confirms: self.max_confirms,
+            max_confirms: self.confirmations,
 
             last_image: None,
             merch_already_detected: false,
