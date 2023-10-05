@@ -1,11 +1,14 @@
 use std::fmt::{Debug, Formatter};
 
 use image::RgbImage;
+use serde::Deserialize;
 
+#[derive(Deserialize, Debug)]
+#[serde(default)]
 pub struct WebsiteDataBuilder {
     url: String,
 
-    scripts: Vec<String>,
+    scripts: Option<Vec<String>>,
     screenshot_selector: Option<String>,
     wait: u64,
     threshold: f64,
@@ -16,7 +19,7 @@ impl Default for WebsiteDataBuilder {
     fn default() -> Self {
         Self {
             url: String::new(),
-            scripts: vec![],
+            scripts: None,
             screenshot_selector: None,
             wait: 0,
             threshold: 0.99,
@@ -48,7 +51,10 @@ impl WebsiteDataBuilder {
 
     /// add a javascript script to run when the site loads
     pub fn add_script<S: ToString>(mut self, script: S) -> Self {
-        self.scripts.push(format!("()=>{{{}}}", script.to_string()));
+        self.scripts
+            .get_or_insert_with(|| vec![])
+            .push(format!("()=>{{{}}}", script.to_string()));
+
         self
     }
 
@@ -107,7 +113,7 @@ impl WebsiteDataBuilder {
 
 pub struct WebsiteData {
     url: String,
-    scripts: Vec<String>,
+    scripts: Option<Vec<String>>,
     screenshot_selector: Option<String>,
     wait: u64,
     threshold: f64,
@@ -143,7 +149,7 @@ impl Debug for WebsiteData {
 
 
 impl WebsiteData {
-    pub fn scripts(&self) -> &Vec<String> {
+    pub fn scripts(&self) -> &Option<Vec<String>> {
         &self.scripts
     }
     pub fn url(&self) -> &str {

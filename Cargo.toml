@@ -14,5 +14,7 @@ image = "0.24.7"
 image-compare = "0.3.1"
 dotenv = "0.15.0"
 dotenv_codegen = "0.15.0"
+serde = { version = "1.0.188", features = ["derive"] }
+toml = "0.8.2"
 
 futures = "0.3.28" # needed for chrome oxide tokio handler thread

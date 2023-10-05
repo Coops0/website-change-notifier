@@ -1,3 +1,4 @@
+use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chromiumoxide::{Browser, Page};
@@ -12,6 +13,7 @@ use tokio::task;
 use tokio::time::sleep;
 
 use website_data::{wd, WebsiteData};
+use crate::website_data::WebsiteDataBuilder;
 
 mod website_data;
 
@@ -27,7 +29,7 @@ const MERCH_KEYWORDS: &[&str] = &[
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    /// **EDIT HERE**
+    // **EDIT HERE**
     let mut sites: Vec<WebsiteData> = vec![
         wd("https://www.kevinabstract.co")
             .add_script("document.body.style.background='black';")
@@ -50,6 +52,19 @@ async fn main() -> anyhow::Result<()> {
         wd("https://videostore.world/").build(),
         wd("https://shop.holidaybrand.co/").build(),
     ];
+
+    if let Ok(s) = tokio::fs::read_to_string("./sites.toml").await {
+        let read_sites: Vec<WebsiteDataBuilder> = toml::from_str(&s)?;
+        println!("Loaded {} sites from toml file", read_sites.len());
+
+        for site in read_sites {
+            sites.push(site.build());
+        }
+    }
+
+    if sites.is_empty() {
+        panic!("no sites added")
+    }
 
     let (browser, mut handler) = Browser::launch(
         BrowserConfigBuilder::default()
@@ -159,8 +174,10 @@ async fn create_screenshot(page: &Page, site: &mut WebsiteData, last_image: &Opt
     page.wait_for_navigation().await?;
 
     // run all scripts
-    for script in site.scripts() {
-        let _ = page.evaluate(script.as_str()).await;
+    if let Some(scripts) = site.scripts() {
+        for script in scripts {
+            let _ = page.evaluate(script.as_str()).await;
+        }
     }
 
     if site.wait() != 0 {
@@ -212,7 +229,6 @@ async fn notify(
     let message = MessageBuilder::new(dotenv!("PUSHOVER_USER_KEY"), dotenv!("PUSHOVER_APP_TOKEN"), message)
         .set_title("Website Change Detected")
         .set_url(website.url(), None)
-        .add_device("iphone")
         .set_timestamp(now)
         .set_priority(priority)
         .build();
