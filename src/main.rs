@@ -1,6 +1,8 @@
+use std::cmp::Ordering;
 use std::env;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use anyhow::Context;
 use chromiumoxide::{Browser, Page};
 use chromiumoxide::browser::BrowserConfigBuilder;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
@@ -56,6 +58,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let _ = PUSHOVER_KEYS.set(keys);
+
+    // important to test
+    println!("Got pushover keys {:?}", PUSHOVER_KEYS.get().expect("no pushover keys"));
 
     run_browser(sites).await
 }
@@ -127,16 +132,20 @@ async fn check_site(page: &Page, site: &mut WebsiteData) -> anyhow::Result<()> {
 
     let all_changed = only_scores.into_iter().all(|s| s < site.threshold());
     let most_similar = screenshot_scores.into_iter()
-        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
-        .expect("no screenshots?");
+        .max_by(|a, b| match a.0.partial_cmp(&b.0) {
+            Some(c) => c,
+            None => {
+                eprintln!("error comparing on site {} with a={},b={}", a.0, b.0, site.url());
+                Ordering::Equal
+            }
+        }).context("no screenshots?")?;
 
     site.last_image = Some(most_similar.1);
 
     // if get css of page then it always has shop or store or whatever
     let text = page.evaluate("document.body.outerHTML").await?.into_value::<String>()?.to_lowercase();
 
-    let mut merch_newly_detected = MERCH_KEYWORDS.get()
-        .unwrap()
+    let mut merch_newly_detected = MERCH_KEYWORDS.get_or_init(Vec::new)
         .iter()
         .any(|k| text.contains(k));
 
@@ -201,7 +210,9 @@ async fn create_screenshot(page: &Page, site: &mut WebsiteData, last_image: &Opt
 
         let comparison = match last_image {
             // if the function fails, then that means the image sizes were different, which means the site was 100% updated
-            Some(ref last_image) => image_compare::rgb_hybrid_compare(&screenshot_image, last_image).map(|r| r.score).unwrap_or(0.0),
+            Some(ref last_image) => image_compare::rgb_hybrid_compare(&screenshot_image, last_image)
+                .map(|r| r.score)
+                .unwrap_or_default(),
             None => 1.0,
         };
 
@@ -218,15 +229,11 @@ async fn notify(
 ) {
     println!("Notifying for {}...", website.url());
 
-    let duration_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    let now = duration_since_epoch.as_secs();
-
-    let (user_key, app_token) = PUSHOVER_KEYS.get().unwrap();
+    let (user_key, app_token) = PUSHOVER_KEYS.get().expect("no pushover keys");
 
     let message = MessageBuilder::new(user_key, app_token, message)
         .set_title("Website Change Detected")
         .set_url(website.url(), None)
-        .set_timestamp(now)
         .set_priority(priority)
         .build();
 
