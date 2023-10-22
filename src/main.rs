@@ -95,7 +95,7 @@ async fn run_browser(mut sites: Vec<WebsiteData>) -> anyhow::Result<()> {
             }
         }
 
-        page.goto("about:blank").await?;
+        let _ = page.goto("about:blank").await;
         println!("--- CYCLE END ---");
 
         sleep(Duration::from_secs(25)).await;
